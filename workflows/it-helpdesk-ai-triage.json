@@ -1,0 +1,1772 @@
+{
+  "id": "ithdTriageWf0001",
+  "name": "IT Helpdesk - AI Triage",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "it-helpdesk/ticket",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ticket-webhook",
+      "name": "Ticket Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "c8a7f765-0002-46a4-9074-724987cb8c92"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst headers = $json.headers || {};\nconst pick = (...keys) => {\n  for (const k of keys) {\n    const v = body[k];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return null;\n};\nconst email = pick('requester_email','employee_email','email','user_email','userEmail') || headers['x-employee-email'] || '';\nconst description = String(pick('description','body','message','text','details','summary') || '');\nconst ticketId = String(pick('ticket_id','id','ticketId','number') || ('TCK-' + Date.now()));\nreturn [{ json: {\n  ticket_id: ticketId,\n  external_id: String(pick('external_id','id') || ticketId),\n  employee_email: String(email).toLowerCase().trim(),\n  employee_name: String(pick('requester_name','employee_name','name','user_name') || ''),\n  subject: String(pick('subject','title') || description.slice(0, 90) || 'No subject'),\n  description,\n  priority: String(pick('priority') || 'normal').toLowerCase(),\n  category_hint: pick('category') || null,\n  source: String(pick('source') || 'helpdesk'),\n  received_at: new Date().toISOString(),\n  has_email: Boolean(String(email).trim()),\n} }];"
+      },
+      "id": "normalize-ticket",
+      "name": "Normalize Ticket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.has_email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-ticket-valid",
+      "name": "If Ticket Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: false, error: \"ticket requires requester_email / employee_email\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "reject-ticket",
+      "name": "Reject Ticket",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, ticket_id: $json.ticket_id, status: \"processing\", message: \"Ticket accepted, AI triage started.\" }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "accept-ticket",
+      "name": "Accept Ticket",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nINSERT INTO tickets (id, external_id, employee_email, employee_name, subject, description, category, status, source)\nVALUES ($1,$2,$3,$4,$5,$6,$7,'processing',$8)\nON CONFLICT (id) DO UPDATE SET\n  subject = EXCLUDED.subject,\n  description = EXCLUDED.description,\n  employee_email = EXCLUDED.employee_email,\n  status = 'processing',\n  updated_at = now()\nRETURNING id, status;",
+        "options": {
+          "queryReplacement": "={{ [ $json.ticket_id, $json.external_id, $json.employee_email, $json.employee_name, $json.subject, $json.description, $json.category_hint, $json.source ] }}"
+        }
+      },
+      "id": "upsert-ticket",
+      "name": "Upsert Ticket",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1040,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fileSelector": "/data/it-config.json",
+        "options": {}
+      },
+      "id": "read-it-config",
+      "name": "Read IT Config",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "extract-config-text",
+      "name": "Extract Config Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst raw = $json.data ?? $json.text ?? '';\nconst cfg = typeof raw === 'string' ? JSON.parse(raw) : raw;\nreturn [{ json: cfg }];"
+      },
+      "id": "parse-config",
+      "name": "Parse Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/data/it-inventory.xlsx",
+        "options": {}
+      },
+      "id": "read-inventory-sheet",
+      "name": "Read Inventory Sheet",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {
+          "headerRow": true,
+          "includeEmptyCells": false
+        }
+      },
+      "id": "parse-inventory-sheet",
+      "name": "Parse Inventory Sheet",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        2340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst cfg = $('Parse Config').first().json;\nconst ticket = $('Normalize Ticket').first().json;\nconst rows = $('Parse Inventory Sheet').all().map(i => i.json || {});\nconst norm = (v) => String(v ?? '').trim();\nconst email = String(ticket.employee_email || '').toLowerCase();\n\nconst employee = rows.find(r => norm(r.email).toLowerCase() === email)\n  || rows.find(r => norm(ticket.employee_name) && norm(r.name).toLowerCase() === norm(ticket.employee_name).toLowerCase())\n  || null;\n\nconst days = (d) => {\n  const t = Date.parse(d);\n  return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 86400000)) : null;\n};\n\nconst emp = employee ? {\n  ...employee,\n  tenure_days: days(employee.start_date),\n  installed_software: String(employee.installed_software || '').split(';').map(s => s.trim()).filter(Boolean),\n} : null;\n\nconst systemPrompt = [\n  'You are the AI service-desk agent for ' + ((cfg.company && cfg.company.name) || 'the company') + ' IT department.',\n  'You receive one helpdesk ticket, the employee record from the IT inventory sheet, IT policy and the approved software catalog.',\n  'Do this:',\n  '1. Classify category as one of: software_install, software_issue, hardware_issue, hardware_request, access_request, network, account, other.',\n  '2. Ground every factual claim in the employee record (device, OS, installed software, department) and the catalog. Never invent hardware, licenses or software.',\n  '3. Write a concrete resolution. For software issues give short numbered steps that match the employee OS.',\n  '4. Set requires_admin_decision=true ONLY when a human must authorize something: paid/non-catalog software, access or permission change, hardware allocation, destructive or costly action. Then admin_question is exactly one yes/no question.',\n  '5. Never claim you performed an action. Set auto_close=true only when your answer fully resolves the ticket and no IT follow-up is needed.',\n  '6. severity: low | medium | high | critical. Use critical for data loss, security or an unusable device.',\n  '7. user_message is the reply the employee reads: friendly, short, no jargon, states the next step.',\n  '8. it_actions is a short list of what IT must do, or [].',\n  '9. hardware.reason: for hardware_request, restate the business reason from the ticket; reason_ok=true only if it is specific.',\n  'Return ONLY a JSON object, no markdown, matching:',\n  '{\"category\":\"string\",\"severity\":\"string\",\"confidence\":0.0,\"diagnosis\":\"string\",\"resolution\":\"string\",\"user_message\":\"string\",\"requires_admin_decision\":false,\"admin_question\":null,\"recommended_action\":\"install_software|check_asset_availability|grant_access|repair_device|investigate|none\",\"requested_software\":null,\"hardware\":{\"type\":\"laptop|monitor|headset|dock|keyboard|mouse|phone\",\"reason\":\"string\"}|null,\"reason_ok\":true,\"auto_close\":false,\"it_actions\":[]}',\n].join('\\n');\n\nconst userContent = JSON.stringify({\n  today: new Date().toISOString().slice(0, 10),\n  ticket: {\n    id: ticket.ticket_id,\n    subject: ticket.subject,\n    description: ticket.description,\n    priority: ticket.priority,\n    category_hint: ticket.category_hint,\n    raised_by: { name: ticket.employee_name, email: ticket.employee_email },\n  },\n  employee: emp,\n  inventory_matched: Boolean(emp),\n  it_policy: cfg.ai_policy || {},\n  software_catalog: (cfg.software_catalog || []).map(s => ({\n    name: s.name, slug: s.slug, license: s.license, auto_install: s.auto_install !== false, requires_admin_approval: Boolean(s.requires_admin_approval),\n  })),\n});\n\nreturn [{ json: {\n  ticket_id: ticket.ticket_id,\n  employee: emp,\n  inventory_matched: Boolean(emp),\n  ticket,\n  config: cfg,\n  ai_request: {\n    model: $env.AI_MODEL || 'gpt-4.1-mini',\n    temperature: 0.2,\n    response_format: { type: 'json_object' },\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userContent },\n    ],\n  },\n  // second opinion: one attempt there, then the workflow escalates to a human\n  ai_fallback_request: {\n    model: $env.AI_FALLBACK_MODEL || 'gpt-4.1-mini',\n    temperature: 0.2,\n    response_format: { type: 'json_object' },\n    messages: [\n      { role: 'system', content: systemPrompt },\n      { role: 'user', content: userContent },\n    ],\n  },\n} }];"
+      },
+      "id": "build-ai-request",
+      "name": "Build AI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_BASE_URL + \"/chat/completions\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ai_request) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "ai-triage",
+      "name": "AI Triage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $env.AI_FALLBACK_BASE_URL }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-fallback-configured",
+      "name": "If Fallback Configured",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AI_FALLBACK_BASE_URL || \"\") + \"/chat/completions\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.AI_FALLBACK_API_KEY || $env.AI_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Build AI Request').first().json.ai_fallback_request) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "ai-fallback",
+      "name": "AI Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        360
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Build AI Request').first().json;\nconst cfg = ctx.config || {};\nconst policy = cfg.ai_policy || {};\nconst raw = (($json.choices || [])[0] || {}).message?.content || '';\nconst text = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();\nlet ai = null;\ntry { ai = JSON.parse(text); } catch (e) {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if (m) { try { ai = JSON.parse(m[0]); } catch (e2) { ai = null; } }\n}\nif (!ai) {\n  ai = {\n    category: 'other', severity: 'medium', confidence: 0,\n    diagnosis: 'AI returned no parsable decision', resolution: '', user_message: '',\n    requires_admin_decision: false, auto_close: false, it_actions: ['manual triage'],\n  };\n}\nai.confidence = Number(ai.confidence ?? 0);\nai.category = String(ai.category || 'other');\nai.severity = String(ai.severity || 'medium');\nai.it_actions = Array.isArray(ai.it_actions) ? ai.it_actions : [];\n\n// --- deterministic policy enforcement (AI classifies, code decides) ---\nconst catalog = cfg.software_catalog || [];\nconst wanted = String(ai.requested_software || '').toLowerCase().trim();\nconst match = wanted ? catalog.find(s =>\n  s.slug === wanted ||\n  String(s.name).toLowerCase() === wanted ||\n  (s.aliases || []).some(a => wanted.includes(String(a).toLowerCase()))\n) : null;\n\nif (ai.category === 'software_install' && wanted) {\n  if (!match) {\n    ai.requires_admin_decision = true;\n    ai.admin_question = ai.admin_question || ('The employee asked for \"' + ai.requested_software + '\", which is not in the approved software catalog. Approve installing it?');\n    ai.catalog_match = null;\n  } else {\n    ai.requested_software = match.name;\n    ai.catalog_match = { slug: match.slug, name: match.name, license: match.license || 'unknown' };\n    if (match.requires_admin_approval || match.auto_install === false) {\n      ai.requires_admin_decision = true;\n      ai.admin_question = ai.admin_question || ('Approve a ' + match.name + ' license and installation for this employee?');\n    }\n  }\n}\n\nconst minAny = Number(policy.min_confidence_any_action ?? 0.55);\nconst minAuto = Number(policy.min_confidence_for_autoclose ?? 0.7);\nif (ai.severity === 'critical' || ai.confidence < minAny) ai.requires_admin_decision = true;\nif ((policy.never_auto_close_severities || []).includes(ai.severity)) ai.auto_close = false;\nif ((policy.never_auto_close_categories || []).includes(ai.category)) ai.auto_close = false;\nif (ai.confidence < minAuto) ai.auto_close = false;\n\nlet route;\nif (ai.requires_admin_decision) route = 'admin_decision';\nelse if (ai.category === 'software_install') route = 'software_install';\nelse if (ai.category === 'hardware_request') route = 'hardware_request';\nelse if (['hardware_issue', 'access_request', 'network', 'account'].includes(ai.category)) route = 'notify_it';\nelse route = 'software_help';\n\nreturn [{ json: { ...ctx, ai, route } }];"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "r0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "software_install",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "software install"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "software_help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "software help"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "notify_it",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "notify it"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "hardware_request",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "hardware request"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "r4",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "admin_decision",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "admin decision"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "route-intent",
+      "name": "Route Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        3380,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $json;\nconst ai = ctx.ai;\nconst entry = ai.catalog_match || null;\nreturn [{ json: {\n  ...ctx,\n  install: entry ? { slug: entry.slug, name: entry.name } : null,\n  install_prepared: Boolean(entry),\n  outcome: { status: 'processing', user_message: '', resolution: '', it_message: null, it_priority: 'normal' },\n} }];"
+      },
+      "id": "prepare-install",
+      "name": "Prepare Install",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.install_prepared }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-auto-install-allowed",
+      "name": "If Auto Install Allowed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3900,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=sh /installers/software-install.sh {{ $json.install.slug }} {{ $json.ticket_id }} {{ $json.employee_email }}"
+      },
+      "id": "run-software-installer",
+      "name": "Run Software Installer",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Parse AI Response').first().json;\nconst name = (ctx.ai.catalog_match && ctx.ai.catalog_match.name) || ctx.ai.requested_software || 'the software';\nconst stdout = String($json.stdout || '').slice(0, 2000);\nconst stderr = String($json.stderr || '').slice(0, 2000);\nreturn [{ json: {\n  ...ctx,\n  install: { slug: ctx.ai.catalog_match ? ctx.ai.catalog_match.slug : null, name },\n  install_result: { ok: Number($json.exitCode) === 0, exit_code: Number($json.exitCode), stdout, stderr },\n} }];"
+      },
+      "id": "install-result",
+      "name": "Install Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nINSERT INTO software_installs (ticket_id, employee_email, software, status, exit_code, log, finished_at)\nVALUES ($1,$2,$3,$4,$5,$6,now())\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.ticket_id, $json.employee_email, $json.install.name, $json.install_result.ok ? 'installed' : 'failed', $json.install_result.exit_code, ($json.install_result.stdout + \"\\n\" + $json.install_result.stderr).slice(0, 8000) ] }}"
+        }
+      },
+      "id": "log-install",
+      "name": "Log Install",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        4680,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Install Result').first().json;\nconst ok = ctx.install_result.ok;\nconst name = ctx.install.name;\nreturn [{ json: {\n  ...ctx,\n  outcome: {\n    status: ok ? 'closed' : 'pending_it',\n    user_message: ok\n      ? name + ' is installed and ready to use. If you do not see it straight away, sign out and back in once.'\n      : 'I could not finish installing ' + name + ' automatically. I have sent the error details to the IT team and they will complete it on your device.',\n    resolution: (ok ? 'Automated install completed: ' : 'Automated install failed: ') + name,\n    it_message: ok ? null : [\n      'AUTOMATED INSTALL FAILED',\n      'Software: ' + name,\n      'Employee: ' + ctx.employee_email,\n      'Exit code: ' + ctx.install_result.exit_code,\n      'Output: ' + (ctx.install_result.stderr || ctx.install_result.stdout || 'none').slice(0, 700),\n    ].join('\\n'),\n    it_priority: ok ? 'normal' : 'high',\n  },\n} }];"
+      },
+      "id": "finalize-install",
+      "name": "Finalize Install",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4940,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $json;\nconst ai = ctx.ai;\nreturn [{ json: { ...ctx, approval: {\n  kind: 'software_install',\n  question: ai.admin_question || ('Approve installing ' + (ai.requested_software || 'the requested software') + ' for this employee?'),\n  details: {\n    employee: ctx.employee,\n    requested_software: ai.requested_software,\n    category: ai.category,\n    severity: ai.severity,\n    diagnosis: ai.diagnosis,\n    recommendation: ai.resolution,\n    confidence: ai.confidence,\n  },\n  requester: ctx.ticket.employee_email,\n} } }];"
+      },
+      "id": "prepare-install-approval",
+      "name": "Prepare Install Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $json;\nconst ai = ctx.ai;\nreturn [{ json: { ...ctx, approval: {\n  kind: ai.recommended_action || 'other',\n  question: ai.admin_question || ('Approve the ' + ai.category.replace(/_/g, ' ') + ' request for this employee?'),\n  details: {\n    employee: ctx.employee,\n    category: ai.category,\n    severity: ai.severity,\n    diagnosis: ai.diagnosis,\n    recommendation: ai.resolution,\n    it_actions: ai.it_actions,\n    confidence: ai.confidence,\n  },\n  requester: ctx.ticket.employee_email,\n} } }];"
+      },
+      "id": "prepare-admin-request",
+      "name": "Prepare Admin Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nINSERT INTO approvals (ticket_id, kind, question, details, requester, resume_url)\nVALUES ($1,$2,$3,$4::jsonb,$5,$6)\nRETURNING id, kind, question;",
+        "options": {
+          "queryReplacement": "={{ [ $json.ticket_id, $json.approval.kind, $json.approval.question, JSON.stringify($json.approval.details), $json.approval.requester, $execution.resumeUrl ] }}"
+        }
+      },
+      "id": "create-approval",
+      "name": "Create Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        4420,
+        470
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst appr = $json;\nconst ctx = $('Parse AI Response').first().json;\nconst base = $env.APPROVAL_BASE_URL;\nconst link = (d) => base + '?token=' + appr.id + '&decision=' + d;\nconst e = ctx.employee || {};\nconst t = ctx.ticket;\nconst lines = [\n  'DECISION NEEDED (' + appr.kind.replace(/_/g, ' ') + ') - ticket ' + ctx.ticket_id,\n  '',\n  'Employee : ' + (t.employee_name || (e && e.name) || 'unknown') + ' <' + t.employee_email + '>',\n  e && e.department ? 'Role     : ' + (e.role || '') + ' / ' + e.department + ' (manager ' + (e.manager_email || 'n/a') + ')' : null,\n  e && e.device_model ? 'Device   : ' + e.device_model + ' | ' + (e.os_version || '') + ' | asset ' + (e.device_asset_tag || 'n/a') : 'Device   : not found in inventory sheet',\n  'Subject  : ' + t.subject,\n  'Request  : ' + ((ctx.ai && ctx.ai.requested_software) || (ctx.ai.hardware && ctx.ai.hardware.type) || appr.kind.replace(/_/g, ' ')),\n  '',\n  'AI diagnosis    : ' + (ctx.ai.diagnosis || 'n/a'),\n  'AI recommendation: ' + (ctx.ai.resolution || 'n/a'),\n  'Severity        : ' + ctx.ai.severity + '   confidence: ' + Math.round((ctx.ai.confidence || 0) * 100) + '%',\n  '',\n  'QUESTION: ' + appr.question,\n  '',\n  'APPROVE -> ' + link('approved'),\n  'REJECT  -> ' + link('rejected'),\n  '(links expire after 7 days)',\n].filter((l) => l !== null);\nreturn [{ json: {\n  ...ctx,\n  approval: { id: appr.id, kind: appr.kind, question: appr.question },\n  it_message: lines.join('\\n'),\n  it_priority: ctx.ai.severity === 'critical' ? 'critical' : 'high',\n  outcome: { status: 'awaiting_admin', user_message: '', resolution: '', it_message: null, it_priority: 'high' },\n} }];"
+      },
+      "id": "compose-approval-request",
+      "name": "Compose Approval Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4680,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/internal-notes\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $json.ticket_id, body: $json.it_message, priority: $json.it_priority, kind: \"approval_request\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "send-approval-request",
+      "name": "Send Approval Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4940,
+        470
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "httpMethod": "GET",
+          "responseMode": "onReceived"
+        }
+      },
+      "id": "wait-for-decision",
+      "name": "Wait For Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5200,
+        470
+      ],
+      "webhookId": "fa2a402e-e39f-430f-abdf-cf620f14884d"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Compose Approval Request').first().json;\nconst p = Object.assign({}, $json.query || {}, ($json.body && typeof $json.body === 'object') ? $json.body : {});\nconst decision = String(p.decision || '').toLowerCase();\nconst decidedBy = String(p.decided_by || p.by || 'IT admin');\nconst approved = decision === 'approved';\nconst ai = ctx.ai;\nconst isInstall = approved && ai.recommended_action === 'install_software' && ai.catalog_match;\nconst name = (ai.catalog_match && ai.catalog_match.name) || ai.requested_software || 'the requested action';\n\nconst outcome = approved\n  ? {\n      status: isInstall ? 'processing' : 'closed',\n      user_message: isInstall ? '' : 'Good news - the IT admin approved your request. The team is actioning it now and you will get an update on this ticket.',\n      resolution: 'Approved by ' + decidedBy + ' (' + ctx.approval.question + ')',\n      it_message: isInstall ? null : 'APPROVED by ' + decidedBy + ': ' + ctx.approval.question + '\\nAction for IT: ' + (ai.resolution || 'see ticket'),\n      it_priority: 'normal',\n    }\n  : {\n      status: 'pending_it',\n      user_message: 'The IT admin reviewed your request and could not approve it as it stands. The reason is on your ticket and the team will follow up with alternatives.',\n      resolution: 'Rejected by ' + decidedBy + ' (' + ctx.approval.question + ')',\n      it_message: 'REJECTED by ' + decidedBy + ': ' + ctx.approval.question,\n      it_priority: 'normal',\n    };\n\nreturn [{ json: {\n  ...ctx,\n  decision, decided_by: decidedBy, approved,\n  install: isInstall ? { slug: ai.catalog_match.slug, name } : null,\n  outcome,\n} }];"
+      },
+      "id": "apply-decision",
+      "name": "Apply Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "d0",
+                    "leftValue": "={{ Boolean($json.install) }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approved install"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "id": "d1",
+                    "leftValue": "={{ $json.approved }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approved other"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "rejected"
+        }
+      },
+      "id": "switch-decision",
+      "name": "Switch Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        5720,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $json;\nconst ai = ctx.ai;\nconst close = Boolean(ai.auto_close);\nconst e = ctx.employee || {};\nreturn [{ json: {\n  ...ctx,\n  outcome: {\n    status: close ? 'closed' : 'pending_it',\n    user_message: ai.user_message || 'Please try those steps and reply here if the problem continues.',\n    resolution: ai.resolution || ai.diagnosis || 'Guided troubleshooting provided.',\n    it_message: close ? null : [\n      'TICKET ' + ctx.ticket_id + ' - ' + ai.severity + ' software issue needs an IT look',\n      'Employee: ' + (ctx.ticket.employee_name || e.name || 'unknown') + ' <' + ctx.ticket.employee_email + '>',\n      e.device_model ? 'Device: ' + e.device_model + ' | ' + (e.os_version || '') : null,\n      'Issue: ' + ctx.ticket.subject,\n      'Diagnosis: ' + (ai.diagnosis || 'n/a'),\n      'Steps already given to the user: ' + (ai.resolution || 'n/a'),\n      ai.it_actions.length ? 'Follow-up: ' + ai.it_actions.join('; ') : null,\n    ].filter(Boolean).join('\\n'),\n    it_priority: ai.severity === 'high' || ai.severity === 'critical' ? 'high' : 'normal',\n  },\n} }];"
+      },
+      "id": "prepare-help-reply",
+      "name": "Prepare Help Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $json;\nconst ai = ctx.ai;\nconst e = ctx.employee || {};\nconst t = ctx.ticket;\nconst urgent = ai.severity === 'high' || ai.severity === 'critical';\nconst itMessage = [\n  'TICKET ' + ctx.ticket_id + ' - ' + ai.category.replace(/_/g, ' ') + ' (' + ai.severity + ')',\n  'Employee: ' + (t.employee_name || e.name || 'unknown') + ' <' + t.employee_email + '>',\n  e.department ? 'Dept: ' + e.department + ' | manager: ' + (e.manager_email || 'n/a') + ' | tenure: ' + (e.tenure_days ?? 'n/a') + ' days' : null,\n  e.device_model ? 'Device: ' + e.device_model + ' | ' + (e.os_version || '') + ' | RAM ' + (e.ram_gb || '?') + 'GB | asset ' + (e.device_asset_tag || 'n/a') : null,\n  ctx.inventory_matched ? null : 'NOTE: employee not found in the IT inventory sheet - device details unknown.',\n  'Subject: ' + t.subject,\n  'Details: ' + String(t.description || '').slice(0, 600),\n  '',\n  'AI diagnosis: ' + (ai.diagnosis || 'n/a'),\n  'AI recommendation: ' + (ai.resolution || 'n/a'),\n  ai.it_actions.length ? 'Actions for IT: ' + ai.it_actions.join('; ') : null,\n  'Confidence: ' + Math.round((ai.confidence || 0) * 100) + '%',\n].filter((l) => l !== null);\n\nreturn [{ json: {\n  ...ctx,\n  outcome: {\n    status: 'pending_it',\n    user_message: ai.user_message || 'I have shared this with the IT team and they will follow up on this ticket.',\n    resolution: ai.resolution || ai.diagnosis || '',\n    it_message: itMessage.join('\\n'),\n    it_priority: urgent ? 'high' : 'normal',\n  },\n} }];"
+      },
+      "id": "prepare-it-report",
+      "name": "Prepare IT Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_BASE_URL + \"/webhook/it-helpdesk/asset-request\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "call-asset-automation",
+      "name": "Call Asset Automation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3640,
+        1040
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Parse AI Response').first().json;\nconst res = ($json.body && typeof $json.body === 'object') ? $json.body : ($json || {});\nconst failed = Boolean($json.error) || !res.decision;\nreturn [{ json: {\n  ...ctx,\n  asset_result: res,\n  outcome: failed\n    ? {\n        status: 'pending_it',\n        user_message: 'I could not complete the asset check automatically, so I have passed your request to the IT team.',\n        resolution: 'Asset automation call failed.',\n        it_message: 'ASSET AUTOMATION FAILED for ticket ' + ctx.ticket_id + '\\n' + JSON.stringify($json).slice(0, 600),\n        it_priority: 'high',\n      }\n    : {\n        status: res.status || 'pending_it',\n        user_message: res.user_message || 'I have raised this with the IT team and will update you here.',\n        resolution: res.resolution || ('Asset request: ' + res.decision),\n        it_message: res.it_message || null,\n        it_priority: res.it_priority || 'normal',\n      },\n} }];"
+      },
+      "id": "asset-decision-received",
+      "name": "Asset Decision Received",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3900,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Build AI Request').first().json;\nconst err = $json.error || $json;\nreturn [{ json: {\n  ...ctx,\n  ai: { category: 'other', severity: 'medium', confidence: 0, diagnosis: 'AI triage unavailable', resolution: '', user_message: '', auto_close: false, it_actions: ['manual triage'] },\n  route: 'escalate',\n  outcome: {\n    status: 'pending_it',\n    user_message: 'I have passed your ticket to the IT team for a manual review - you will hear from them here shortly.',\n    resolution: 'AI triage unavailable.',\n    it_message: 'AI TRIAGE FAILED (no model answered; primary ' + ($env.AI_BASE_URL || 'unset') + ') for ticket ' + ctx.ticket_id + '\\nEmployee: ' + ctx.ticket.employee_email + '\\nError: ' + JSON.stringify(err).slice(0, 600),\n    it_priority: 'high',\n  },\n} }];"
+      },
+      "id": "ai-failure-fallback",
+      "name": "AI Failure Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.it_report }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-needs-it-note",
+      "name": "If Needs IT Note",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Save Outcome').first().json.last_reply }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-reply",
+      "name": "If Has Reply",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst s = $json || {};\n// $json here is the helpdesk note response, not the ticket: read the saved row\n// (and fall back to the request context) for the authoritative fields.\nconst one = (name) => { try { return $(name).first().json || {}; } catch (e) { return {}; } };\nconst ctx = one('Build AI Request');\nconst tail = one('Save Outcome');\nconst t = ctx.ticket || {};\nconst cfg = ctx.config || {};\nconst ticket_id = s.ticket_id || s.id || tail.id || t.id || '';\nconst priority = String(tail.it_priority || s.it_priority || 'normal');\nconst status = String(tail.status || s.status || 'awaiting_admin');\nconst subject = String(s.subject || t.subject || ('Ticket ' + ticket_id));\nconst employee = String(s.employee_email || t.employee_email || '');\nconst who = String(t.employee_name || (ctx.employee && ctx.employee.name) || employee);\nconst report = String(tail.it_report || s.it_report || s.it_message || s.body || '').slice(0, 1500);\nconst company = (cfg.company && cfg.company.name) || 'IT';\nconst text = [\n  '[' + priority.toUpperCase() + '] ' + status.replace(/_/g, ' ') + ' - ' + subject,\n  company + ' helpdesk | ticket ' + ticket_id,\n  'Employee: ' + who + (employee ? ' <' + employee + '>' : ''),\n  '',\n  report,\n].join('\\n').trim();\n\nconst alerts = [];\nconst push = (channel, url, payload) => { if (url) alerts.push({ channel, url, payload }); };\n// Slack and Google Chat incoming webhooks both accept {\"text\": \"...\"}.\npush('slack', $env.IT_SLACK_WEBHOOK_URL, { text });\npush('google_chat', $env.IT_GOOGLE_CHAT_WEBHOOK_URL, { text });\npush('teams', $env.IT_TEAMS_WEBHOOK_URL, { text });\n// Any HTTP email API (Resend, Mailgun, Postmark...): adjust the fields if yours differ.\npush('email', $env.IT_EMAIL_WEBHOOK_URL, {\n  from: $env.IT_EMAIL_FROM || 'helpdesk@example.com',\n  to: String($env.IT_EMAIL_TO || '').split(',').map((v) => v.trim()).filter(Boolean),\n  subject: '[' + priority.toUpperCase() + '] ' + subject + ' (' + ticket_id + ')',\n  text,\n});\n// Escape hatch: your own gateway gets the full record as JSON.\npush('generic', $env.IT_NOTIFY_WEBHOOK_URL, {\n  kind: 'it_notification', ticket_id, status, priority, subject, employee, report,\n  reply: String(tail.last_reply || s.last_reply || ''),\n});\n\nreturn alerts.length ? alerts.map((a) => ({ json: a })) : [{ json: { skip: true } }];"
+      },
+      "id": "build-it-alerts",
+      "name": "Build IT Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6700,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ !$json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-alerts-configured",
+      "name": "If Alerts Configured",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6920,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "send-it-alerts",
+      "name": "Send IT Alerts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7140,
+        420
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/internal-notes\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $('Save Outcome').first().json.id, body: $('Save Outcome').first().json.it_report, priority: $('Save Outcome').first().json.it_priority || \"normal\", kind: \"ai_report\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "send-it-internal-note",
+      "name": "Send IT Internal Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6460,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/tickets/\" + $('Save Outcome').first().json.id + \"/comments\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ author: \"ai-helpdesk\", internal: false, body: $('Save Outcome').first().json.last_reply }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "reply-to-employee",
+      "name": "Reply To Employee",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7340,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Save Outcome').first().json.status }}",
+              "rightValue": "closed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-closed",
+      "name": "If Closed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        7560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/tickets/\" + $('Save Outcome').first().json.id + \"/close\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ resolution: $('Save Outcome').first().json.resolution || \"Resolved by AI helpdesk\", closed_by: \"ai-helpdesk\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "close-ticket-in-helpdesk",
+      "name": "Close Ticket In Helpdesk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7780,
+        -160
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "kept-open-for-it",
+      "name": "Kept Open For IT",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        7780,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst src = $json;\nconst o = src.outcome || {};\nconst ai = src.ai || {};\nconst q = (v) => (v === null || v === undefined ? 'NULL' : \"'\" + String(v).replace(/'/g, \"''\") + \"'\");\nconst status = o.status || 'pending_it';\nconst decision = JSON.stringify({ ai: ai, route: src.route || null, asset_result: src.asset_result || null });\nconst conf = Number(ai.confidence);\nconst sql = 'UPDATE tickets SET '\n  + 'status = ' + q(status) + ', '\n  + 'category = ' + q(ai.category || 'other') + ', '\n  + 'severity = ' + q(ai.severity || 'medium') + ', '\n  + 'confidence = ' + (Number.isFinite(conf) ? conf : 'NULL') + ', '\n  + 'route = ' + q(src.route || null) + ', '\n  + 'resolution = ' + q(o.resolution || '') + ', '\n  + 'it_report = ' + q(o.it_message || null) + ', '\n  + 'it_priority = ' + q(o.it_priority || 'normal') + ', '\n  + 'last_reply = ' + q(o.user_message || '') + ', '\n  + 'ai_decision = ' + q(decision) + '::jsonb, '\n  + \"closed_at = CASE WHEN \" + q(status) + \" = 'closed' THEN now() ELSE closed_at END, \"\n  + 'updated_at = now() '\n  + 'WHERE id = ' + q(src.ticket_id)\n  + ' RETURNING id, status, it_report, it_priority, last_reply, resolution;';\nreturn [{ json: { sql, ticket_id: src.ticket_id } }];"
+      },
+      "id": "compose-outcome-sql",
+      "name": "Compose Outcome SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "id": "save-outcome",
+      "name": "Save Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        7560,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Ticket Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Ticket": {
+      "main": [
+        [
+          {
+            "node": "If Ticket Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Ticket Valid": {
+      "main": [
+        [
+          {
+            "node": "Accept Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept Ticket": {
+      "main": [
+        [
+          {
+            "node": "Upsert Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Ticket": {
+      "main": [
+        [
+          {
+            "node": "Read IT Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read IT Config": {
+      "main": [
+        [
+          {
+            "node": "Extract Config Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Config Text": {
+      "main": [
+        [
+          {
+            "node": "Parse Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Config": {
+      "main": [
+        [
+          {
+            "node": "Read Inventory Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Inventory Sheet": {
+      "main": [
+        [
+          {
+            "node": "Parse Inventory Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Inventory Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build AI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Request": {
+      "main": [
+        [
+          {
+            "node": "AI Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Triage": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Fallback Configured",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Fallback Configured": {
+      "main": [
+        [
+          {
+            "node": "AI Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Failure Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Fallback": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Failure Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Route Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Intent": {
+      "main": [
+        [
+          {
+            "node": "Prepare Install",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Help Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare IT Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Asset Automation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Admin Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Install": {
+      "main": [
+        [
+          {
+            "node": "If Auto Install Allowed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Auto Install Allowed": {
+      "main": [
+        [
+          {
+            "node": "Run Software Installer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Install Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Software Installer": {
+      "main": [
+        [
+          {
+            "node": "Install Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Install Result": {
+      "main": [
+        [
+          {
+            "node": "Log Install",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Install": {
+      "main": [
+        [
+          {
+            "node": "Finalize Install",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Install": {
+      "main": [
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Install Approval": {
+      "main": [
+        [
+          {
+            "node": "Create Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Admin Request": {
+      "main": [
+        [
+          {
+            "node": "Create Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Approval": {
+      "main": [
+        [
+          {
+            "node": "Compose Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Approval Request": {
+      "main": [
+        [
+          {
+            "node": "Send Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Approval Request": {
+      "main": [
+        [
+          {
+            "node": "Wait For Decision",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build IT Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait For Decision": {
+      "main": [
+        [
+          {
+            "node": "Apply Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Decision": {
+      "main": [
+        [
+          {
+            "node": "Switch Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Decision": {
+      "main": [
+        [
+          {
+            "node": "Run Software Installer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Help Reply": {
+      "main": [
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare IT Report": {
+      "main": [
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Asset Decision Received": {
+      "main": [
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Asset Automation": {
+      "main": [
+        [
+          {
+            "node": "Asset Decision Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Failure Fallback": {
+      "main": [
+        [
+          {
+            "node": "Compose Outcome SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Outcome SQL": {
+      "main": [
+        [
+          {
+            "node": "Save Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Outcome": {
+      "main": [
+        [
+          {
+            "node": "If Needs IT Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Needs IT Note": {
+      "main": [
+        [
+          {
+            "node": "Send IT Internal Note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Has Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send IT Internal Note": {
+      "main": [
+        [
+          {
+            "node": "If Has Reply",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build IT Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build IT Alerts": {
+      "main": [
+        [
+          {
+            "node": "If Alerts Configured",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Alerts Configured": {
+      "main": [
+        [
+          {
+            "node": "Send IT Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Has Reply": {
+      "main": [
+        [
+          {
+            "node": "Reply To Employee",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply To Employee": {
+      "main": [
+        [
+          {
+            "node": "If Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Closed": {
+      "main": [
+        [
+          {
+            "node": "Close Ticket In Helpdesk",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Kept Open For IT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "a28d1cde-0a7a-4664-baa2-e0ab234de731",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,137 @@
+name: it-helpdesk-automation
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ithd-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-n8n}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n8n_local_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-helpdesk}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-n8n} -d ${POSTGRES_DB:-helpdesk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.49.5}
+    container_name: ithd-n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-helpdesk}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-n8n_local_dev}
+      DB_POSTGRESDB_SCHEMA: public
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${N8N_BASE_URL:-http://localhost:5678}/
+      N8N_EDITOR_BASE_URL: ${N8N_BASE_URL:-http://localhost:5678}/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-me-in-env-file}
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # n8n 2.x disables Execute Command by default; the installer runner needs it.
+      NODES_EXCLUDE: "[]"
+      # n8n 2.x blocks file nodes outside an allowlist; these are the mounts we use.
+      N8N_RESTRICT_FILE_ACCESS_TO: /data;/runtime;/installers
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_LOG_LEVEL: ${N8N_LOG_LEVEL:-info}
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      GENERIC_TIMEZONE: ${TZ:-Asia/Karachi}
+      TZ: ${TZ:-Asia/Karachi}
+      # ---- integration wiring (workflows read these with $env) ----
+      HELPDESK_BASE_URL: ${HELPDESK_BASE_URL:-http://mock-helpdesk:8080}
+      HELPDESK_API_KEY: ${HELPDESK_API_KEY:-dev-helpdesk-key}
+      AI_BASE_URL: ${AI_BASE_URL:-http://mock-llm:8080/v1}
+      AI_API_KEY: ${AI_API_KEY:-mock-key}
+      AI_MODEL: ${AI_MODEL:-mock-it-agent}
+      # Second attempt when the primary provider fails, then a human escalation.
+      AI_FALLBACK_BASE_URL: ${AI_FALLBACK_BASE_URL:-}
+      AI_FALLBACK_API_KEY: ${AI_FALLBACK_API_KEY:-}
+      AI_FALLBACK_MODEL: ${AI_FALLBACK_MODEL:-mock-it-agent}
+      N8N_BASE_URL: ${N8N_BASE_URL:-http://localhost:5678}
+      APPROVAL_BASE_URL: ${APPROVAL_BASE_URL:-http://localhost:5678/webhook/it-helpdesk/approval}
+      # ---- where IT gets told (every channel is optional) ----
+      IT_SLACK_WEBHOOK_URL: ${IT_SLACK_WEBHOOK_URL:-}
+      IT_GOOGLE_CHAT_WEBHOOK_URL: ${IT_GOOGLE_CHAT_WEBHOOK_URL:-}
+      IT_TEAMS_WEBHOOK_URL: ${IT_TEAMS_WEBHOOK_URL:-}
+      IT_EMAIL_WEBHOOK_URL: ${IT_EMAIL_WEBHOOK_URL:-}
+      IT_EMAIL_TO: ${IT_EMAIL_TO:-}
+      IT_EMAIL_FROM: ${IT_EMAIL_FROM:-}
+      IT_NOTIFY_WEBHOOK_URL: ${IT_NOTIFY_WEBHOOK_URL:-}
+      SOFTWARE_INSTALL_LOG_DIR: /runtime/logs
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows
+      - ./data:/data:ro
+      - ./installers:/installers:ro
+      - ./runtime:/runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Stand-in for the real helpdesk API until it is provided.
+  # Same contract the workflows expect: tickets, comments, internal notes, close.
+  mock-helpdesk:
+    image: node:22-alpine
+    container_name: ithd-mock-helpdesk
+    restart: unless-stopped
+    command: ["node", "/app/server.mjs"]
+    working_dir: /app
+    environment:
+      PORT: 8080
+      HELPDESK_API_KEY: ${HELPDESK_API_KEY:-dev-helpdesk-key}
+      TZ: ${TZ:-Asia/Karachi}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./mock-helpdesk:/app:ro
+
+  # Optional: drives Anthropic's own Claude Code CLI (`claude -p`) so a Claude
+  # subscription can back the triage step. Unconfigured by default: without a
+  # credential every call returns 503 and the workflow uses its fallback. No
+  # port is published - only n8n can reach it.
+  claude-bridge:
+    build: ./claude-bridge
+    container_name: ithd-claude-bridge
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      # From `claude setup-token` on your own machine. Leave empty to keep the
+      # bridge off; the workflow then falls back and finally escalates to IT.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # If set, it wins over the subscription token and bills the API instead.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BRIDGE_TIMEOUT_MS: ${BRIDGE_TIMEOUT_MS:-95000}
+
+  # Stand-in for OpenAI/any OpenAI-compatible endpoint (dev + CI).
+  mock-llm:
+    image: node:22-alpine
+    container_name: ithd-mock-llm
+    restart: unless-stopped
+    command: ["node", "/app/server.mjs"]
+    working_dir: /app
+    environment:
+      PORT: 8080
+      TZ: ${TZ:-Asia/Karachi}
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./mock-llm:/app:ro
+
+volumes:
+  postgres_data:
+  n8n_data:

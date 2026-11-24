@@ -1,0 +1,365 @@
+{
+  "id": "ithdApprovalWf01",
+  "name": "IT Helpdesk - Admin Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "it-helpdesk/approval",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "approval-webhook",
+      "name": "Approval Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "432003c8-72db-4372-9a6f-725e3ea3e2af"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst q = $json.query || {};\nconst b = ($json.body && typeof $json.body === 'object') ? $json.body : {};\nconst token = String(q.token || b.token || '').trim();\nconst decision = String(q.decision || b.decision || '').toLowerCase().trim();\nconst decided_by = String(q.by || b.by || b.decided_by || 'it-admin').trim();\nconst valid = token.length >= 8 && ['approved', 'rejected'].includes(decision);\nreturn [{ json: { token, decision, decided_by, valid } }];"
+      },
+      "id": "parse-approval-request",
+      "name": "Parse Approval Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-request-valid",
+      "name": "If Request Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nSELECT id, ticket_id, kind, question, status, resume_url,\n       (status = 'pending' AND expires_at > now()) AS usable\nFROM approvals WHERE id::text = $1 LIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.token ] }}"
+        }
+      },
+      "id": "lookup-approval",
+      "name": "Lookup Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        780,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.usable }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-still-pending",
+      "name": "If Still Pending",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nUPDATE approvals\nSET status = $2, decided_by = $3, decided_at = now()\nWHERE id::text = $1 AND status = 'pending'\nRETURNING id, ticket_id, status, resume_url, question;",
+        "options": {
+          "queryReplacement": "={{ [ $('Parse Approval Request').first().json.token, $('Parse Approval Request').first().json.decision, $('Parse Approval Request').first().json.decided_by ] }}"
+        }
+      },
+      "id": "record-decision",
+      "name": "Record Decision",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1300,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.resume_url }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "decision",
+              "value": "={{ $('Parse Approval Request').first().json.decision }}"
+            },
+            {
+              "name": "decided_by",
+              "value": "={{ $('Parse Approval Request').first().json.decided_by }}"
+            },
+            {
+              "name": "approval_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "approval_status",
+              "value": "={{ $json.status }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "wake-paused-workflow",
+      "name": "Wake Paused Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Parse Approval Request').first().json;\nconst rec = $('Record Decision').first().json || {};\nconst ok = p.decision === 'approved';\nconst color = ok ? '#4ade80' : '#f87171';\nconst title = ok ? 'Approved' : 'Rejected';\nconst ticket = rec.ticket_id || 'unknown';\nconst html = '<!doctype html><html><head><meta charset=\"utf-8\"><title>Decision recorded</title>'\n  + '<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'\n  + '.card{background:#1e293b;padding:40px 48px;border-radius:14px;max-width:520px;box-shadow:0 20px 50px rgba(0,0,0,.4)}'\n  + 'h1{margin:0 0 12px;font-size:22px;color:' + color + '}p{line-height:1.6;color:#cbd5e1}code{background:#0f172a;padding:2px 6px;border-radius:4px}'\n  + '</style></head><body><div class=\"card\"><h1>' + title + '</h1>'\n  + '<p>Decision <strong>' + p.decision + '</strong> recorded for ticket <code>' + ticket + '</code>.</p>'\n  + '<p>The AI helpdesk has been notified and will continue the ticket automatically. You can close this window.</p>'\n  + '</div></body></html>';\nreturn [{ json: { html } }];"
+      },
+      "id": "build-result-page",
+      "name": "Build Result Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "content-type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "result-page",
+      "name": "Result Page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=<!doctype html><html><head><meta charset=\"utf-8\"><title>Link not usable</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.card{background:#1e293b;padding:40px 48px;border-radius:14px;max-width:520px}h1{margin:0 0 12px;font-size:22px;color:#fbbf24}p{line-height:1.6;color:#cbd5e1}</style></head><body><div class=\"card\"><h1>This link is not usable</h1><p>The decision link is invalid, was already used, or has expired (links are valid for 7 days).</p><p>Open the ticket in the helpdesk to see the current state.</p></div></body></html>",
+        "options": {
+          "responseCode": 410,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "content-type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "invalid-page",
+      "name": "Invalid Page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1820,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Approval Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Approval Request": {
+      "main": [
+        [
+          {
+            "node": "If Request Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Request Valid": {
+      "main": [
+        [
+          {
+            "node": "Lookup Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Approval": {
+      "main": [
+        [
+          {
+            "node": "If Still Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Still Pending": {
+      "main": [
+        [
+          {
+            "node": "Record Decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Decision": {
+      "main": [
+        [
+          {
+            "node": "Wake Paused Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wake Paused Workflow": {
+      "main": [
+        [
+          {
+            "node": "Build Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Result Page": {
+      "main": [
+        [
+          {
+            "node": "Result Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b7986df8-de14-423f-b002-f9d878693b02",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": []
+}

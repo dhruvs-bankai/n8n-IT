@@ -1,0 +1,124 @@
+{
+  "_comment": "Owned by IT admin. Edit and commit; workflows re-read this file on every ticket.",
+  "company": {
+    "name": "Example Corp",
+    "it_department": "IT Service Desk",
+    "it_email": "it@example.com",
+    "timezone": "Asia/Karachi"
+  },
+  "ai_policy": {
+    "min_confidence_for_autoclose": 0.7,
+    "min_confidence_any_action": 0.55,
+    "never_auto_close_severities": ["critical"],
+    "never_auto_close_categories": ["hardware_issue", "access_request", "network"],
+    "reply_tone": "friendly, short, no jargon, always say what to do next"
+  },
+  "software_catalog": [
+    {
+      "slug": "chrome",
+      "name": "Google Chrome",
+      "aliases": ["chrome", "google chrome", "browser"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "free",
+      "notes": "Default browser for all users."
+    },
+    {
+      "slug": "firefox",
+      "name": "Mozilla Firefox",
+      "aliases": ["firefox", "mozilla"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "free"
+    },
+    {
+      "slug": "7zip",
+      "name": "7-Zip",
+      "aliases": ["7zip", "7-zip", "zip tool", "extract"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "free"
+    },
+    {
+      "slug": "vscode",
+      "name": "Visual Studio Code",
+      "aliases": ["vscode", "vs code", "visual studio code"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "free"
+    },
+    {
+      "slug": "zoom",
+      "name": "Zoom Workplace",
+      "aliases": ["zoom", "meeting app"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "corporate",
+      "notes": "Use company SSO login."
+    },
+    {
+      "slug": "slack",
+      "name": "Slack",
+      "aliases": ["slack"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "corporate"
+    },
+    {
+      "slug": "notepadpp",
+      "name": "Notepad++",
+      "aliases": ["notepad++", "notepadpp"],
+      "install_command": "install",
+      "auto_install": true,
+      "license": "free"
+    },
+    {
+      "slug": "adobe-acrobat",
+      "name": "Adobe Acrobat Pro",
+      "aliases": ["acrobat", "adobe", "pdf editor"],
+      "install_command": "install",
+      "auto_install": false,
+      "license": "paid",
+      "requires_admin_approval": true,
+      "notes": "Paid license, seat must be approved by IT admin."
+    },
+    {
+      "slug": "figma",
+      "name": "Figma Desktop",
+      "aliases": ["figma", "design tool"],
+      "install_command": "install",
+      "auto_install": false,
+      "license": "paid",
+      "requires_admin_approval": true
+    },
+    {
+      "slug": "autocad",
+      "name": "AutoCAD",
+      "aliases": ["autocad", "cad"],
+      "install_command": "install",
+      "auto_install": false,
+      "license": "paid",
+      "requires_admin_approval": true,
+      "notes": "Engineering only."
+    }
+  ],
+  "asset_guidelines": {
+    "_comment": "IT admin defines who qualifies for hardware. AI may only raise an admin request when ALL rules pass.",
+    "min_tenure_days": 30,
+    "min_reason_chars": 25,
+    "require_ai_reason_ok": true,
+    "max_assets_of_same_type": 1,
+    "allowed_types": ["laptop", "monitor", "headset", "dock", "keyboard", "mouse", "phone"],
+    "require_admin_approval_types": ["laptop", "phone"],
+    "blocked_departments": [],
+    "blocked_statuses": ["probation"],
+    "notes": "One asset per type per employee. Laptops and phones always need IT admin sign-off."
+  },
+  "installation_targets": {
+    "_comment": "How a software package is deployed. Switch 'simulate' off once a real mechanism exists.",
+    "windows": { "method": "winget", "template": "winget install --silent --accept-package-agreements --id {package_id}" },
+    "macos": { "method": "brew", "template": "brew install --cask {package_id}" },
+    "linux": { "method": "apt", "template": "sudo apt-get install -y {package_id}" },
+    "simulate": true
+  }
+}

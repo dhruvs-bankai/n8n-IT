@@ -1,0 +1,891 @@
+{
+  "id": "ithdAssetWf00001",
+  "name": "IT Helpdesk - Asset Request",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "it-helpdesk/asset-request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "asset-request-webhook",
+      "name": "Asset Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "3adeccd1-3090-4915-af95-afd302bf7c45"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst b = ($json.body && typeof $json.body === 'object') ? $json.body : ($json || {});\nconst ai = b.ai || {};\nconst ticket = b.ticket || {};\nconst employee = b.employee || null;\nconst config = b.config || {};\nconst hw = ai.hardware || {};\nreturn [{ json: {\n  ticket_id: b.ticket_id || ticket.ticket_id,\n  ticket,\n  employee,\n  employee_email: (employee && employee.email) || ticket.employee_email || '',\n  ai,\n  config,\n  reason: String(hw.reason || ai.diagnosis || ''),\n  requested_type: String(hw.type || '').toLowerCase().trim(),\n} }];"
+      },
+      "id": "parse-asset-request",
+      "name": "Parse Asset Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nSELECT id, asset_tag, type, model, serial, purchase_date\nFROM assets\nWHERE type = $1 AND status = 'available'\nORDER BY purchase_date NULLS LAST\nLIMIT 5;",
+        "options": {
+          "queryReplacement": "={{ [ $json.requested_type ] }}"
+        }
+      },
+      "id": "check-availability",
+      "name": "Check Availability",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        520,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nSELECT count(*)::int AS held\nFROM assets\nWHERE lower(assigned_to) = lower($1) AND type = $2;",
+        "options": {
+          "queryReplacement": "={{ [ $('Parse Asset Request').first().json.employee_email, $('Parse Asset Request').first().json.requested_type ] }}"
+        }
+      },
+      "id": "check-current-holding",
+      "name": "Check Current Holding",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        780,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst req = $('Parse Asset Request').first().json;\nconst g = req.config.asset_guidelines || {};\nconst emp = req.employee || null;\nconst ai = req.ai || {};\nconst type = req.requested_type;\nconst available = $('Check Availability').all().map((i) => i.json).filter((a) => a && a.asset_tag);\nconst held = Number(($('Check Current Holding').first().json || {}).held || 0);\nconst reasons = [];\n\nconst allowed = g.allowed_types || [];\nif (!type) reasons.push('I could not tell which type of hardware you need. Please mention it (laptop, monitor, headset, dock, keyboard, mouse or phone) and why.');\nelse if (allowed.length && !allowed.includes(type)) reasons.push(type + ' is not available through self-service hardware requests.');\n\nif (!emp) reasons.push('Your employee record is not in the IT inventory sheet yet, so eligibility cannot be verified. IT will add it and re-check.');\n\nlet tenure = null;\nif (emp) {\n  tenure = Number(emp.tenure_days);\n  const minTenure = Number(g.min_tenure_days ?? 0);\n  if (Number.isFinite(tenure) && minTenure > 0 && tenure < minTenure) {\n    reasons.push('Minimum tenure for a hardware allocation is ' + minTenure + ' days and you have ' + tenure + '.');\n  }\n  const status = String(emp.employment_status || '').toLowerCase();\n  if ((g.blocked_statuses || []).map((s) => String(s).toLowerCase()).includes(status)) {\n    reasons.push('Employment status \"' + emp.employment_status + '\" is not eligible for asset allocation.');\n  }\n  const dept = String(emp.department || '').toLowerCase();\n  if ((g.blocked_departments || []).map((s) => String(s).toLowerCase()).includes(dept)) {\n    reasons.push('Department ' + emp.department + ' is not eligible for this allocation.');\n  }\n  if (emp.device_asset_tag && type === 'laptop') {\n    reasons.push('You already have a laptop assigned (' + emp.device_asset_tag + ' ' + (emp.device_model || '') + '). A replacement needs an IT assessment, not a new allocation.');\n  }\n}\n\nconst minReason = Number(g.min_reason_chars ?? 0);\nif (String(req.reason).trim().length < minReason) reasons.push('Please explain why you need it in a bit more detail (at least ' + minReason + ' characters).');\nif (g.require_ai_reason_ok && ai.reason_ok === false) reasons.push('The reason given is not specific enough for an asset request.');\n\nconst limit = Number(g.max_assets_of_same_type ?? 0);\nif (limit > 0 && held >= limit) reasons.push('You already hold ' + held + ' ' + type + '(s); the limit is ' + limit + '.');\n\nconst eligible = reasons.length === 0;\nconst needsAdmin = (g.require_admin_approval_types || []).includes(type) || eligible;\n\nreturn [{ json: {\n  ...req,\n  available,\n  held,\n  tenure_days: tenure,\n  guidelines: g,\n  reasons,\n  eligible,\n  needs_admin_approval: eligible && needsAdmin,\n} }];"
+      },
+      "id": "evaluate-guidelines",
+      "name": "Evaluate Guidelines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.eligible }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-eligible",
+      "name": "If Eligible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ decision: \"not_eligible\", status: \"closed\", user_message: \"I checked the IT asset guidelines for this request and it cannot be raised automatically yet:\\n\\n- \" + $json.reasons.join(\"\\n- \") + \"\\n\\nIf you think this is wrong, reply here and the IT team will review it.\", resolution: \"Asset request blocked by guidelines: \" + $json.reasons.join(\"; \") }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-not-eligible",
+      "name": "Respond Not Eligible",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.available.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-asset-in-stock",
+      "name": "If Asset In Stock",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst r = $json;\nconst emp = r.employee || {};\nconst body = [\n  'HARDWARE NOT IN STOCK - ticket ' + r.ticket_id,\n  'Employee: ' + (emp.name || r.employee_email) + ' <' + r.employee_email + '>',\n  'Dept: ' + (emp.department || 'n/a') + ' | role: ' + (emp.role || 'n/a'),\n  'Requested: ' + r.requested_type,\n  'Reason: ' + r.reason,\n  'Guidelines: passed (eligible).',\n  '',\n  'Action: procure a ' + r.requested_type + ' or offer an alternative. The employee has been told there is no stock.',\n].join('\\n');\nreturn [{ json: { ...r, it_message: body } }];"
+      },
+      "id": "prepare-procurement-note",
+      "name": "Prepare Procurement Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/internal-notes\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $json.ticket_id, body: $json.it_message, priority: \"high\", kind: \"procurement\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "notify-it-procurement",
+      "name": "Notify IT Procurement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ decision: \"out_of_stock\", status: \"pending_it\", user_message: \"You qualify for a \" + $(\"Prepare Procurement Note\").first().json.requested_type + \", but we currently have none in stock. I have asked IT to procure one and they will update you on this ticket.\", resolution: \"Eligible, no stock. Procurement requested.\", it_message: null }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-out-of-stock",
+      "name": "Respond Out Of Stock",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst r = $json;\nconst emp = r.employee || {};\nconst pick = r.available[0];\nconst body = [\n  'HARDWARE ALLOCATION - approval needed - ticket ' + r.ticket_id,\n  'Employee: ' + (emp.name || r.employee_email) + ' <' + r.employee_email + '>',\n  'Dept: ' + (emp.department || 'n/a') + ' | role: ' + (emp.role || 'n/a') + ' | tenure: ' + (r.tenure_days ?? 'n/a') + ' days',\n  'Current device: ' + (emp.device_asset_tag || 'none') + ' ' + (emp.device_model || ''),\n  '',\n  'Requested: ' + r.requested_type,\n  'Reason: ' + r.reason,\n  'Guidelines: PASSED (' + (r.guidelines.notes || 'see data/it-config.json') + ')',\n  'Available asset proposed: ' + pick.asset_tag + ' ' + (pick.model || ''),\n  '',\n  'QUESTION: Approve assigning asset ' + pick.asset_tag + ' (' + (pick.model || r.requested_type) + ') to this employee?',\n].join('\\n');\nreturn [{ json: { ...r, proposed_asset: pick, it_message: body, request_question: 'Approve assigning asset ' + pick.asset_tag + ' (' + (pick.model || r.requested_type) + ') to ' + (emp.name || r.employee_email) + '?' } }];"
+      },
+      "id": "prepare-asset-approval",
+      "name": "Prepare Asset Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nINSERT INTO approvals (ticket_id, kind, question, details, requester, resume_url)\nVALUES ($1,'hardware_assign',$2,$3::jsonb,$4,$5)\nRETURNING id, question;",
+        "options": {
+          "queryReplacement": "={{ [ $json.ticket_id, $json.request_question, JSON.stringify({ proposed_asset: $json.proposed_asset, requested_type: $json.requested_type, reason: $json.reason, guidelines: $json.guidelines, employee: $json.employee }), $json.employee_email, $execution.resumeUrl ] }}"
+        }
+      },
+      "id": "create-asset-approval",
+      "name": "Create Asset Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2080,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst a = $json;\nconst r = $('Prepare Asset Approval').first().json;\nconst base = $env.APPROVAL_BASE_URL;\nconst link = (d) => base + '?token=' + a.id + '&decision=' + d;\nconst body = r.it_message + '\\n\\nAPPROVE -> ' + link('approved') + '\\nREJECT  -> ' + link('rejected') + '\\n(links expire after 7 days)';\nreturn [{ json: {\n  ...r,\n  approval_id: a.id,\n  it_message: body,\n  user_message: 'Good news: a ' + r.requested_type + ' is available and you meet the asset guidelines. I have sent the allocation request to the IT admin for approval and will update you here as soon as they respond.',\n} }];"
+      },
+      "id": "compose-asset-approval-note",
+      "name": "Compose Asset Approval Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/internal-notes\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $json.ticket_id, body: $json.it_message, priority: \"high\", kind: \"asset_approval\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "send-asset-approval-note",
+      "name": "Send Asset Approval Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2600,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ decision: \"eligible_pending_admin\", status: \"awaiting_admin\", user_message: $json.user_message, resolution: \"Asset allocation awaiting IT admin approval.\", approval_id: $json.approval_id }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-pending-approval",
+      "name": "Respond Pending Approval",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "httpMethod": "GET",
+          "responseMode": "onReceived"
+        }
+      },
+      "id": "wait-asset-decision",
+      "name": "Wait Asset Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3120,
+        0
+      ],
+      "webhookId": "af5f7105-e742-44ba-8ebc-b989e9692ae4"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Compose Asset Approval Note').first().json;\nconst p = Object.assign({}, $json.query || {}, ($json.body && typeof $json.body === 'object') ? $json.body : {});\nconst decision = String(p.decision || '').toLowerCase();\nreturn [{ json: { ...ctx, decision, approved: decision === 'approved', decided_by: String(p.decided_by || 'IT admin'), approval_id: p.approval_id || ctx.approval_id } }];"
+      },
+      "id": "apply-asset-decision",
+      "name": "Apply Asset Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3380,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-asset-approved",
+      "name": "If Asset Approved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nWITH picked AS (\n  UPDATE assets\n  SET status = 'assigned', assigned_to = $1, assigned_at = now()\n  WHERE id = (\n    SELECT id FROM assets\n    WHERE type = $2 AND status = 'available'\n    ORDER BY purchase_date NULLS LAST\n    LIMIT 1\n  )\n  RETURNING id, asset_tag, type, model\n), ins AS (\n  INSERT INTO asset_assignments (asset_id, asset_tag, employee_email, ticket_id, reason, approved_by, approval_id, assigned_at)\n  SELECT picked.id, picked.asset_tag, $1, $3, $4, $5, $6, now()\n  FROM picked\n  RETURNING id\n)\nSELECT picked.asset_tag, picked.type, picked.model FROM picked;",
+        "options": {
+          "queryReplacement": "={{ [ $('Apply Asset Decision').first().json.employee_email, $('Apply Asset Decision').first().json.requested_type, $('Apply Asset Decision').first().json.ticket_id, $('Apply Asset Decision').first().json.reason, $('Apply Asset Decision').first().json.decided_by, $('Apply Asset Decision').first().json.approval_id ] }}"
+        }
+      },
+      "id": "assign-asset",
+      "name": "Assign Asset",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3900,
+        -140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst a = $('Assign Asset').first().json;\nconst ctx = $('Apply Asset Decision').first().json;\nconst emp = ctx.employee || {};\nconst text = [\n  'Approved. Asset ' + a.asset_tag + ' (' + (a.model || a.type) + ') is now assigned to you.',\n  'Please collect it from the IT desk (' + ((ctx.config.company && ctx.config.company.it_department) || 'IT') + ') with your employee ID.',\n  'If you need it delivered to ' + (emp.location || 'your location') + ', reply here and IT will arrange it.',\n].join(' ');\nreturn [{ json: { ticket_id: ctx.ticket_id, status: 'closed', text, resolution: 'Asset ' + a.asset_tag + ' assigned, approved by ' + ctx.decided_by + '.' } }];"
+      },
+      "id": "compose-assigned-message",
+      "name": "Compose Assigned Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/tickets/\" + $json.ticket_id + \"/comments\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ author: \"ai-helpdesk\", internal: false, body: $json.text }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "tell-employee-assigned",
+      "name": "Tell Employee Assigned",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4420,
+        -140
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/tickets/\" + $('Compose Assigned Message').first().json.ticket_id + \"/close\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ resolution: $('Compose Assigned Message').first().json.resolution, closed_by: \"ai-helpdesk\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "close-assigned-ticket",
+      "name": "Close Assigned Ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4680,
+        -140
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nUPDATE tickets SET\n  status = $1, resolution = $2, category = 'hardware_request',\n  it_report = $3, updated_at = now(),\n  closed_at = CASE WHEN $1 = 'closed' THEN now() ELSE closed_at END\nWHERE id = $4\nRETURNING id, status;",
+        "options": {
+          "queryReplacement": "={{ [ $('Compose Assigned Message').first().json.status, $('Compose Assigned Message').first().json.resolution, $('Compose Asset Approval Note').first().json.it_message, $('Compose Assigned Message').first().json.ticket_id ] }}"
+        }
+      },
+      "id": "save-asset-ticket-outcome",
+      "name": "Save Asset Ticket Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        4940,
+        -140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst ctx = $('Apply Asset Decision').first().json;\nconst text = 'The IT admin reviewed the hardware request and did not approve the allocation right now. Your ticket has been updated with their note, and the team will follow up with alternatives.';\nreturn [{ json: { ticket_id: ctx.ticket_id, status: 'pending_it', text, resolution: 'Asset allocation rejected by ' + ctx.decided_by + '.' } }];"
+      },
+      "id": "compose-declined-message",
+      "name": "Compose Declined Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3900,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HELPDESK_BASE_URL + \"/tickets/\" + $json.ticket_id + \"/comments\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.HELPDESK_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ author: \"ai-helpdesk\", internal: false, body: $json.text }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "tell-employee-declined",
+      "name": "Tell Employee Declined",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4160,
+        160
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nUPDATE tickets SET status = $1, resolution = $2, updated_at = now()\nWHERE id = $3\nRETURNING id, status;",
+        "options": {
+          "queryReplacement": "={{ [ $json.status, $json.resolution, $json.ticket_id ] }}"
+        }
+      },
+      "id": "save-declined-outcome",
+      "name": "Save Declined Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        4420,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ithd-postgres",
+          "name": "IT Helpdesk Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Asset Request Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Asset Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Asset Request": {
+      "main": [
+        [
+          {
+            "node": "Check Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Availability": {
+      "main": [
+        [
+          {
+            "node": "Check Current Holding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Current Holding": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Guidelines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Guidelines": {
+      "main": [
+        [
+          {
+            "node": "If Eligible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Eligible": {
+      "main": [
+        [
+          {
+            "node": "If Asset In Stock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Not Eligible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Asset In Stock": {
+      "main": [
+        [
+          {
+            "node": "Prepare Asset Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Procurement Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Procurement Note": {
+      "main": [
+        [
+          {
+            "node": "Notify IT Procurement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify IT Procurement": {
+      "main": [
+        [
+          {
+            "node": "Respond Out Of Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Asset Approval": {
+      "main": [
+        [
+          {
+            "node": "Create Asset Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Asset Approval": {
+      "main": [
+        [
+          {
+            "node": "Compose Asset Approval Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Asset Approval Note": {
+      "main": [
+        [
+          {
+            "node": "Send Asset Approval Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Asset Approval Note": {
+      "main": [
+        [
+          {
+            "node": "Respond Pending Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Pending Approval": {
+      "main": [
+        [
+          {
+            "node": "Wait Asset Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Asset Decision": {
+      "main": [
+        [
+          {
+            "node": "Apply Asset Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Asset Decision": {
+      "main": [
+        [
+          {
+            "node": "If Asset Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Asset Approved": {
+      "main": [
+        [
+          {
+            "node": "Assign Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose Declined Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assign Asset": {
+      "main": [
+        [
+          {
+            "node": "Compose Assigned Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Assigned Message": {
+      "main": [
+        [
+          {
+            "node": "Tell Employee Assigned",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell Employee Assigned": {
+      "main": [
+        [
+          {
+            "node": "Close Assigned Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Close Assigned Ticket": {
+      "main": [
+        [
+          {
+            "node": "Save Asset Ticket Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Declined Message": {
+      "main": [
+        [
+          {
+            "node": "Tell Employee Declined",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell Employee Declined": {
+      "main": [
+        [
+          {
+            "node": "Save Declined Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "9721ff13-06d7-47dc-9144-1cf6f4bdbfbf",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": []
+}
